@@ -78,7 +78,7 @@ def chat_with_functions(user_input: str) -> str:
     user_input = preprocess_input(user_input)
     messages.append({"role": "user", "content": user_input})
 
-    # 1️⃣ First call to model
+    # First call to model
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
@@ -87,8 +87,8 @@ def chat_with_functions(user_input: str) -> str:
     )
     assistant_message = response.choices[0].message
 
-    # 2️⃣ Check if a function call is requested
-    func_call = getattr(assistant_message, "function_call", None)
+    # Check if a function call is requested
+    func_call = getattr(assistant_message, "function_call", [])
     if func_call:
         function_name = func_call.name
         arguments = json.loads(func_call.arguments)
@@ -96,11 +96,12 @@ def chat_with_functions(user_input: str) -> str:
         console.print(f"[bold yellow]Calling function:[/bold yellow] {function_name} with arguments {arguments}")
         try:
             result = run_tool(function_name, **arguments)
+            console.print(f"[bold green]Tool result:[/bold green] {result}")
         except Exception as e:
             console.print(f"[bold red]Error calling function {function_name}:[/bold red] {e}")
             result = None
 
-        # 3️⃣ Send function result back to model for final response
+        # Send function result back to model for final response
         # Append assistant message first to keep the chain
         messages.append(assistant_message.model_dump())
 
@@ -119,7 +120,7 @@ def chat_with_functions(user_input: str) -> str:
         messages.append(final_message.model_dump())
         return final_message.content or "[bold red]No response from assistant[/bold red]"
 
-    # 4️⃣ If no function call, just return content
+    # If no function call, just return content
     messages.append(assistant_message.model_dump())
     return assistant_message.content or "[bold red]No response from assistant[/bold red]"
 
