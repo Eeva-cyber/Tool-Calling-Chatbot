@@ -1,71 +1,146 @@
+import os
+import json
+import re
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
-from tools.weather import get_weather
-from tools.calculator import calculate
+from openai import OpenAI
+
+# local tool imports
+from tools import local_tools
+
+# Load API key
+load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 console = Console()
 
-# the tools we have (get weather and calculator)
-tools = {
-    "weather": {
-        "function": get_weather,
-        "description": "Get the current weather for a specific location."
+# ----------------------
+# Define available tools
+# ----------------------
+tools = [
+    {
+        "name": "get_weather",
+        "description": "Get the current weather for a specific location.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "The location to get the weather for."}
+            },
+            "required": ["location"]
+        }
     },
-    "calculator": {
-        "function": calculate,
-        "description": "Perform basic arithmetic operations."
+    {
+        "name": "calculate",
+        "description": "Perform basic arithmetic operations.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["add","subtract","multiply","divide"], "description": "The operation to perform."},
+                "x": {"type": "number", "description": "First number."},
+                "y": {"type": "number", "description": "Second number."}
+            },
+            "required": ["operation","x","y"]
+        }
     }
-}
-
-# messages
-messages = [
-    {"role": "assistant", "content": "You are a helpful assistant that can answer questions and call tools."},
 ]
 
-# choose tool, kwargs allow the parameters to be more flexible
-def run_tool(tool_name, **kwargs):
-    if tool_name == "weather":
-        return tools[tool_name]["function"](kwargs["location"])
-    elif tool_name == "calculator":
-        return tools[tool_name]["function"](kwargs["operation"], kwargs["x"], kwargs["y"])
-    else:
-        return "Unknown tool"
-    
+# ----------------------
+# Conversation memory
+# ----------------------
+messages = [
+    {"role": "system", "content": "You are a helpful assistant. Always use the provided tools for calculations and weather queries. Do not answer directly."}
+]
 
-# main function - ask for user response
+# ----------------------
+# Run local tool
+# ----------------------
+def run_tool(function_name, **arguments):
+    if function_name in local_tools:
+        return local_tools[function_name](**arguments)
+    return f"Unknown tool: {function_name}"
+
+# ----------------------
+# Preprocess simple arithmetic input
+# ----------------------
+def preprocess_input(user_input: str) -> str:
+    match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([\+\-\*/])\s*(\d+(?:\.\d+)?)\s*$", user_input)
+    if match:
+        x, op, y = match.groups()
+        ops_map = {"+":"add", "-":"subtract", "*":"multiply", "/":"divide"}
+        return f"calculate x={x} y={y} operation={ops_map[op]}"
+    return user_input
+
+# ----------------------
+# Chat with function calling
+# ----------------------
+def chat_with_functions(user_input: str) -> str:
+    user_input = preprocess_input(user_input)
+    messages.append({"role": "user", "content": user_input})
+
+    # 1️⃣ First call to model
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        functions=tools,
+        function_call="auto"
+    )
+    assistant_message = response.choices[0].message
+
+    # 2️⃣ Check if a function call is requested
+    func_call = getattr(assistant_message, "function_call", None)
+    if func_call:
+        function_name = func_call.name
+        arguments = json.loads(func_call.arguments)
+
+        console.print(f"[bold yellow]Calling function:[/bold yellow] {function_name} with arguments {arguments}")
+        try:
+            result = run_tool(function_name, **arguments)
+        except Exception as e:
+            console.print(f"[bold red]Error calling function {function_name}:[/bold red] {e}")
+            result = None
+
+        # 3️⃣ Send function result back to model for final response
+        # Append assistant message first to keep the chain
+        messages.append(assistant_message.model_dump())
+
+        # The SDK handles function results via a "message from assistant with role 'assistant'"
+        messages.append({
+            "role": "function",
+            "name": function_name,
+            "content": str(result)
+        })
+
+        final_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages
+        )
+        final_message = final_response.choices[0].message
+        messages.append(final_message.model_dump())
+        return final_message.content or "[bold red]No response from assistant[/bold red]"
+
+    # 4️⃣ If no function call, just return content
+    messages.append(assistant_message.model_dump())
+    return assistant_message.content or "[bold red]No response from assistant[/bold red]"
+
+# ----------------------
+# Main loop
+# ----------------------
 def main():
     console.print(Panel("[bold green]Welcome to your AI chatbot![/bold green]", expand=False))
 
     while True:
-        console.print("\nAvailable tools: [bold blue]weather[/bold blue], [bold blue]calculator[/bold blue]")
-        user_input = console.input("Which tool do you want to run? (or 'exit'): ").strip().lower()
+        user_input = console.input("What do you need me to do today?\n")
 
         if user_input.lower() in ["exit", "quit"]:
             console.print(Panel("[bold red]Goodbye![/bold red]", expand=False))
             break
 
-        # add user message to memory
-        messages.append({"role": "user", "content": user_input})
-
-        # manually choose tool based on keyword first
-        response = ""
-        if "weather" in user_input.lower():
-            location = console.input("Enter the location: ")
-            result = run_tool("weather", location=location)   
-            response = f"[bold cyan]{result}[/bold cyan]"
-        elif "calculator" in user_input.lower():
-            operation = console.input("Operation: ")
-            x = float(console.input("First number: "))
-            y = float(console.input("Second number: "))
-            result = run_tool("calculator", operation=operation, x=x, y=y)
-            response = f"[bold cyan]{result}[/bold cyan]"
-        else:
-            response = "[bold red]I do not know which tool to use yet[/bold red]"
-
-
-        # add the assistant's response into the chat memory
-        messages.append({"role": "assistant", "content": response})
+        response = chat_with_functions(user_input)
         console.print(Panel(response, title="[bold green]Assistant[/bold green]", expand=False))
 
+# ----------------------
+# Entry point
+# ----------------------
 if __name__ == "__main__":
     main()
