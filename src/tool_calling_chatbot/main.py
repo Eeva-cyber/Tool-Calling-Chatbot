@@ -127,10 +127,10 @@ def chat_with_functions(user_input: str) -> str:
 # Main loop
 # ----------------------
 def main():
-    console.print(Panel("[bold green]Welcome to your AI chatbot![/bold green]", expand=False))
+    console.print(Panel("[bold green]Welcome to your AI chatbot! How can I help you today?[/bold green]", expand=False))
 
     while True:
-        user_input = console.input("What do you need me to do today?\n")
+        user_input = console.input("User: ")
 
         if user_input.lower() in ["exit", "quit"]:
             console.print(Panel("[bold red]Goodbye![/bold red]", expand=False))
